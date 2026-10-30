@@ -1,0 +1,11 @@
+.env
+sources.local.toml
+*.local.toml
+state/
+cache/
+__pycache__/
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
