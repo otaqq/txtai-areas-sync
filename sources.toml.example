@@ -1,8 +1,8 @@
-# txtai-areas-sync sources (see README.md). Copy to sources.toml and edit.
+# txtai-kura-sync sources (see README.md). Copy to sources.toml and edit.
 
 [rag]
 url = "http://127.0.0.1:9630"
-api_key_env = "RAG_API_KEY"        # the env var that holds the txtai-areas API key
+api_key_env = "RAG_API_KEY"        # the env var that holds the txtai-kura API key
 
 [kinds.repos]
 cron = "0 3 * * *"                 # every day at 3
@@ -14,14 +14,14 @@ type = "git"
 url = "https://git.example.com/team/handbook.git"
 branch = "main"
 token_env = "GIT_TOKEN"            # optional; token_auth = "token" (Forgejo, Gitea), "bearer" or "basic" (GitHub)
-area = "docs.handbook"
+namespace = "docs.handbook"
 
 [[source]]
 name = "notes"
 type = "dir"
 path = "/srv/vault"                # or a list of folders, then ids start with each folder's name
 every = "1h"
-area = "notes"
+namespace = "notes"
 
 [[source]]
 name = "books"
@@ -30,7 +30,7 @@ cron = "0 5-7 * * *"
 max_minutes = 50
 include = ["**/*.pdf", "**/*.epub", "**/*.md"]
 prefer = ["epub", "pdf"]
-sub = "book"                       # the area is "<key>.<sub>": math.book, cs.ml.book
+sub = "book"                       # the namespace is "<key>.<sub>": math.book, cs.ml.book
 [source.map]
 "math" = ["/srv/books/math"]
 "cs.ml" = ["/srv/books/ml", "/srv/books/ml-en"]

@@ -6,21 +6,21 @@ from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
-from txtai_areas_sync import sync
+from txtai_kura_sync import sync
 
 
 class FakeRag:
-    """Records what would be sent to txtai-areas."""
+    """Records what would be sent to txtai-kura."""
 
     def __init__(self, url, api_key):
         self.upserts, self.deletes = [], []
         FakeRag.last = self
 
-    def upsert(self, area, docs):
-        self.upserts.append((area, [d["id"] for d in docs]))
+    def upsert(self, namespace, docs):
+        self.upserts.append((namespace, [d["id"] for d in docs]))
 
-    def delete(self, area, prefixes):
-        self.deletes.append((area, sorted(prefixes)))
+    def delete(self, namespace, prefixes):
+        self.deletes.append((namespace, sorted(prefixes)))
         return len(prefixes)
 
 
@@ -94,7 +94,7 @@ class TestFiles(Base):
 
     def test_shelves_map(self):
         root = self.tmp / "shelves"
-        for d in ("math.ai.papers", "math.hm.books", "Not An Area"):
+        for d in ("math.ai.papers", "math.hm.books", "Not A Namespace"):
             (root / d).mkdir(parents=True)
         m = sync.shelves_map({"name": "s", "path": str(root), "only": "ai", "prefix": "lab"})
         self.assertEqual(list(m), ["lab.math.ai.papers"])
@@ -107,11 +107,11 @@ class TestFiles(Base):
 
     def test_local_config_overrides(self):
         (self.tmp / "sources.toml").write_text(
-            '[rag]\nurl = "http://a"\n[[source]]\nname = "x"\ntype = "dir"\npath = "/a"\narea = "one"\n')
+            '[rag]\nurl = "http://a"\n[[source]]\nname = "x"\ntype = "dir"\npath = "/a"\nnamespace = "one"\n')
         (self.tmp / "sources.local.toml").write_text(
-            '[text]\nintro = "(冒頭)"\n[[source]]\nname = "x"\ntype = "dir"\npath = "/b"\narea = "two"\n')
+            '[text]\nintro = "(冒頭)"\n[[source]]\nname = "x"\ntype = "dir"\npath = "/b"\nnamespace = "two"\n')
         cfg = sync.load_sources(self.tmp / "sources.toml")
-        self.assertEqual([s["area"] for s in cfg["source"]], ["two"])
+        self.assertEqual([s["namespace"] for s in cfg["source"]], ["two"])
         self.assertEqual(sync.TEXT["intro"], "(冒頭)")
 
 
@@ -123,7 +123,7 @@ class TestRun(Base):
         (self.docs / "a.md").write_text("# A\n\n## One\n\nfirst\n\n## Two\n\nsecond\n")
         (self.docs / "sub" / "b.md").write_text("# B\n\nonly an intro\n")
         self.cfg = {"rag": {"url": "http://rag"},
-                    "source": [{"name": "d", "type": "dir", "path": str(self.docs), "area": "notes"}]}
+                    "source": [{"name": "d", "type": "dir", "path": str(self.docs), "namespace": "notes"}]}
         mock.patch.object(sync, "Rag", FakeRag).start()
 
     def sync(self):
@@ -135,7 +135,7 @@ class TestRun(Base):
         sent = [i for _, ids in rag.upserts for i in ids]
         self.assertEqual(sorted(sent), ["d:a.md#One#0", "d:a.md#Two#0", "d:sub/b.md#(intro)#0"])
         state = json.loads(sync.STATE_FILE.read_text())
-        self.assertEqual(state["d:a.md#One"]["area"], "notes")
+        self.assertEqual(state["d:a.md#One"]["namespace"], "notes")
 
     def test_nothing_changed_sends_nothing(self):
         self.sync()
@@ -156,13 +156,22 @@ class TestRun(Base):
         self.assertEqual(rag.deletes, [("notes", ["d:sub/b.md#(intro)#"])])
         self.assertNotIn("d:sub/b.md#(intro)", json.loads(sync.STATE_FILE.read_text()))
 
+    def test_state_from_before_the_rename_is_read(self):
+        self.sync()
+        state = json.loads(sync.STATE_FILE.read_text())
+        for v in state.values():
+            v["area"] = v.pop("namespace")
+        sync.STATE_FILE.write_text(json.dumps(state))
+        rag = self.sync()
+        self.assertEqual((rag.upserts, rag.deletes), ([], []))
+
     def test_dry_run_changes_nothing(self):
         self.assertEqual(sync.run(self.cfg, {}, None, True), 0)
         self.assertEqual(FakeRag.last.upserts, [])
         self.assertFalse(sync.STATE_FILE.exists())
 
-    def test_source_without_area_is_an_error(self):
-        del self.cfg["source"][0]["area"]
+    def test_source_without_namespace_is_an_error(self):
+        del self.cfg["source"][0]["namespace"]
         self.assertEqual(sync.run(self.cfg, {}, None, False), 1)
 
 

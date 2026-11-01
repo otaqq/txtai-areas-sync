@@ -1,17 +1,17 @@
-"""txtai-areas-sync: keep a txtai-areas search server in step with the documents it indexes.
+"""txtai-kura-sync: keep a txtai-kura search server in step with the documents it indexes.
 
 Reads the sources in sources.toml (git repositories, folders, shelves of books), splits each file into parts
 (Markdown: one "## " section each; PDF: one page each, text by pdftotext from poppler; EPUB: one chapter each),
 compares each part with the last run (sha256), and sends only what changed: a changed part's chunks are deleted and
-sent again, a removed part's chunks are deleted. Each source goes to its area; a shelf source maps areas to any
-number of folders; a shelves source takes every folder directly under its path as one area of the same name.
+sent again, a removed part's chunks are deleted. Each source goes to its namespace; a shelf source maps namespaces to any
+number of folders; a shelves source takes every folder directly under its path as one namespace of the same name.
 Extracted PDF/EPUB text is cached until the file's size and time change.
 Parts are cut into chunks of at most CHUNK characters, each starting with "title › section" so a chunk still tells
 what it belongs to. Only one run at a time (lock file).
 
 Usage:
-  txtai-areas-sync run [--source NAME] [--kind KIND] [--area AREA] [--due] [--dry-run]
-  txtai-areas-sync status
+  txtai-kura-sync run [--source NAME] [--kind KIND] [--namespace NAMESPACE] [--due] [--dry-run]
+  txtai-kura-sync status
 Options before the command: --config sources.toml (default), --data DIR (state and cache).
 """
 import argparse
@@ -33,10 +33,10 @@ import zipfile
 from pathlib import Path
 
 CHUNK = 1500  # characters; Japanese is about 1-1.5 characters per token
-AREA = re.compile(r"^[a-z][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)*$")  # the same as txtai-areas' area names
+NAMESPACE = re.compile(r"^[a-z][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)*$")  # the same as txtai-kura' namespace names
 MIN_PAGE_CHARS = 50  # a PDF page or EPUB chapter with fewer letters (spaces not counted) is left out: scanned pages
 #   without a text layer give only page numbers or nothing, which would fill the index with empty chunks
-BATCH = 200  # chunks per request: txtai-areas saves the whole index once per request, so fewer, bigger requests are faster
+BATCH = 200  # chunks per request: txtai-kura saves the whole index once per request, so fewer, bigger requests are faster
 
 # Words put into the documents: [text] in sources.toml. Changing them changes every part, so everything is sent again
 TEXT = {"intro": "(intro)", "source": "Source: {where}"}
@@ -46,8 +46,8 @@ STATE_DIR = CACHE_DIR = STATE_FILE = FILES_FILE = RUNS_FILE = LOCK_FILE = Path()
 
 
 def configure(data: Path) -> None:
-    """Where state and cache live. state.json: part -> {sha, area, chunks}. files.json: "<source>:<file>" ->
-    [size, mtime_ns, area] when it was last sent, so a file still the same is skipped without being opened (delete it
+    """Where state and cache live. state.json: part -> {sha, namespace, chunks}. files.json: "<source>:<file>" ->
+    [size, mtime_ns, namespace] when it was last sent, so a file still the same is skipped without being opened (delete it
     to read everything again). runs.json: source -> start time of its last run without errors (for --due)."""
     global STATE_DIR, CACHE_DIR, STATE_FILE, FILES_FILE, RUNS_FILE, LOCK_FILE
     STATE_DIR, CACHE_DIR = data / "state", data / "cache"
@@ -56,7 +56,7 @@ def configure(data: Path) -> None:
 
 
 def default_data() -> Path:
-    return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "txtai-areas-sync"
+    return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "txtai-kura-sync"
 
 
 def load_env(path: Path) -> dict:
@@ -75,7 +75,7 @@ def log(msg: str) -> None:
 
 
 class Rag:
-    """The txtai-areas API: /upsert, /delete (by id prefixes), /areas."""
+    """The txtai-kura API: /upsert, /delete (by id prefixes), /namespaces."""
 
     def __init__(self, url: str, api_key: str):
         self.url = url.rstrip("/")
@@ -88,12 +88,12 @@ class Rag:
         with urllib.request.urlopen(req, timeout=600) as r:
             return json.loads(r.read() or b"null")
 
-    def upsert(self, area: str, docs: list) -> None:
+    def upsert(self, namespace: str, docs: list) -> None:
         for i in range(0, len(docs), BATCH):
-            self.call("POST", "/upsert", {"area": area, "documents": docs[i:i + BATCH]})
+            self.call("POST", "/upsert", {"namespace": namespace, "documents": docs[i:i + BATCH]})
 
-    def delete(self, area: str, prefixes: list) -> int:
-        return self.call("POST", "/delete", {"area": area, "prefixes": prefixes}).get("deleted", 0) if prefixes else 0
+    def delete(self, namespace: str, prefixes: list) -> int:
+        return self.call("POST", "/delete", {"namespace": namespace, "prefixes": prefixes}).get("deleted", 0) if prefixes else 0
 
 
 def git_auth(src: dict, env: dict) -> list:
@@ -342,26 +342,26 @@ def parts_of(src: dict, files: dict) -> dict:
 
 
 def shelf_files(src: dict, include: list, exclude: list):
-    """A shelf source: ({path: file}, path -> area, errors). [source.map] maps an area (academic.math) to one folder
-    or a list of them; with sub, the area is "<key>.<sub>". Paths are the files' absolute paths without the leading
+    """A shelf source: ({path: file}, path -> namespace, errors). [source.map] maps a namespace (academic.math) to one folder
+    or a list of them; with sub, the namespace is "<key>.<sub>". Paths are the files' absolute paths without the leading
     "/", so files of different folders never collide. A file in two mapped folders goes to the first."""
-    files, area_of, bad = {}, {}, 0
+    files, namespace_of, bad = {}, {}, 0
     for key, folders in src["map"].items():
-        area = f"{key}.{src['sub']}" if src.get("sub") else key
+        namespace = f"{key}.{src['sub']}" if src.get("sub") else key
         for folder in [folders] if isinstance(folders, str) else folders:
             root = Path(folder)
             if not root.is_dir():
                 bad += 1
-                log(f"{src['name']}: {root} ({area}) is not a directory")
+                log(f"{src['name']}: {root} ({namespace}) is not a directory")
                 continue
             for rel, path in collect(root, include, exclude).items():
                 k = (root / rel).as_posix().lstrip("/")
-                if k in area_of:
-                    if area_of[k] != area:
-                        log(f"{src['name']}: {k} is mapped to {area_of[k]} and {area}; kept in {area_of[k]}")
+                if k in namespace_of:
+                    if namespace_of[k] != namespace:
+                        log(f"{src['name']}: {k} is mapped to {namespace_of[k]} and {namespace}; kept in {namespace_of[k]}")
                     continue
-                files[k], area_of[k] = path, area
-    return files, area_of.get, bad
+                files[k], namespace_of[k] = path, namespace
+    return files, namespace_of.get, bad
 
 
 def load_sources(config: Path) -> dict:
@@ -379,6 +379,14 @@ def load_sources(config: Path) -> dict:
         cfg["kinds"] = cfg.get("kinds", {}) | extra.get("kinds", {})
     TEXT.update(cfg.get("text", {}))
     return cfg
+
+
+def load_state() -> dict:
+    state = json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
+    for v in state.values():  # state from txtai-areas-sync (before v0.2.0) says "area"
+        if "area" in v:
+            v["namespace"] = v.pop("area")
+    return state
 
 
 def save_json(path: Path, data: dict) -> None:
@@ -470,16 +478,16 @@ def one_format(files: dict, prefer: list) -> dict:
     return {rel: f for rel, f in files.items() if rel not in left}
 
 
-def in_area(area: str, under: str | None) -> bool:
-    """Whether area is under or below it (language.pt.book is in language and in language.pt), as txtai-areas searches."""
-    return not under or area == under or area.startswith(under + ".")
+def in_namespace(namespace: str, under: str | None) -> bool:
+    """Whether namespace is under or below it (language.pt.book is in language and in language.pt), as txtai-kura searches."""
+    return not under or namespace == under or namespace.startswith(under + ".")
 
 
 def shelves_map(src: dict) -> dict:
-    """A shelves source: every folder directly under path whose name is an area name is one area of that name
+    """A shelves source: every folder directly under path whose name is a namespace name is one namespace of that name
     (with prefix: "<prefix>.<name>"). only: keep only folders with this word between dots in the name."""
     root = Path(src["path"])
-    names = sorted(d.name for d in root.iterdir() if d.is_dir() and AREA.match(d.name)) if root.is_dir() else []
+    names = sorted(d.name for d in root.iterdir() if d.is_dir() and NAMESPACE.match(d.name)) if root.is_dir() else []
     if src.get("only"):
         skipped = [n for n in names if f".{src['only']}." not in f".{n}."]
         if skipped:
@@ -491,12 +499,12 @@ def shelves_map(src: dict) -> dict:
 
 def run(cfg: dict, env: dict, only: str | None, dry: bool, kind: str | None = None, names: list | None = None,
         under: str | None = None) -> int:
-    """Send what changed. under: only the files going to that area or below it; what is not found any more is then
-    deleted only there, so the source's other areas are left alone. A source's max_minutes stops it after that long;
+    """Send what changed. under: only the files going to that namespace or below it; what is not found any more is then
+    deleted only there, so the source's other namespaces are left alone. A source's max_minutes stops it after that long;
     what was sent is kept (state is saved every batch), the rest goes in on the next run, and nothing is deleted as
     gone until a run sees every file."""
     rag = Rag(cfg["rag"]["url"], env.get(cfg["rag"].get("api_key_env", "RAG_API_KEY"), ""))
-    state = json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
+    state = load_state()
     file_stamps = json.loads(FILES_FILE.read_text()) if FILES_FILE.exists() else {}
     changed = errors = 0
     for src in cfg.get("source", []):
@@ -510,12 +518,12 @@ def run(cfg: dict, env: dict, only: str | None, dry: bool, kind: str | None = No
         if src["type"] in ("shelf", "shelves"):
             if src["type"] == "shelves":
                 src = {**src, "sub": "", "map": shelves_map(src)}
-            files, area_of, bad = shelf_files(src, include, exclude)
+            files, namespace_of, bad = shelf_files(src, include, exclude)
             errors += bad
         elif src["type"] in ("git", "dir"):
-            if not src.get("area"):
+            if not src.get("namespace"):
                 errors += 1
-                log(f"{src['name']}: no area, skipped")
+                log(f"{src['name']}: no namespace, skipped")
                 continue
             if src["type"] == "git":
                 roots = [fetch_git(src, env)]
@@ -528,7 +536,7 @@ def run(cfg: dict, env: dict, only: str | None, dry: bool, kind: str | None = No
                     log(f"{src['name']}: " + (f"{missing[0]} is not a directory" if missing else
                                               f"two paths end in the same folder name ({', '.join(folders)})"))
                     continue
-            area_of = lambda rel, a=src["area"]: a
+            namespace_of = lambda rel, a=src["namespace"]: a
             if len(roots) > 1:  # several paths: ids start with the folder name
                 files = {f"{r.name}/{rel}": f for r in roots for rel, f in collect(r, include, exclude).items()}
             else:
@@ -536,26 +544,26 @@ def run(cfg: dict, env: dict, only: str | None, dry: bool, kind: str | None = No
         else:
             log(f"{src['name']}: unknown type {src['type']}, skipped")
             continue
-        unmapped = [rel for rel in files if not area_of(rel)]
+        unmapped = [rel for rel in files if not namespace_of(rel)]
         if unmapped:
-            log(f"{src['name']}: {len(unmapped)} file(s) outside every area folder, skipped (e.g. {unmapped[0]})")
-        files = {rel: f for rel, f in files.items() if area_of(rel) and in_area(area_of(rel), under)}
+            log(f"{src['name']}: {len(unmapped)} file(s) outside every namespace folder, skipped (e.g. {unmapped[0]})")
+        files = {rel: f for rel, f in files.items() if namespace_of(rel) and in_namespace(namespace_of(rel), under)}
         if src.get("prefer"):  # the same book in several formats: read only the first one listed (e.g. epub before pdf)
             files = one_format(files, [e.lower().lstrip(".") for e in src["prefer"]])
         prefix = f"{src['name']}:"
         seen = set()
-        pending = []  # parts to store: (key, sha, area, old area or None, docs)
+        pending = []  # parts to store: (key, sha, namespace, old namespace or None, docs)
         before = errors
         stopped = False  # max_minutes reached: the rest is left for the next run
         deadline = time.time() + float(src["max_minutes"]) * 60 if src.get("max_minutes") else None
-        stamps = {}  # file key -> [size, mtime_ns, area], kept in FILES_FILE once the source ran without errors
+        stamps = {}  # file key -> [size, mtime_ns, namespace], kept in FILES_FILE once the source ran without errors
         parts_by_file = {}  # the file's relative path -> its part keys in state
         for k in state:
             if k.startswith(prefix):
                 parts_by_file.setdefault(k[len(prefix):].split("#")[0], []).append(k)
 
         def flush():
-            """Delete the old chunks of the pending parts and store the new ones, a few requests per area."""
+            """Delete the old chunks of the pending parts and store the new ones, a few requests per namespace."""
             nonlocal errors
             if not pending:
                 return
@@ -565,7 +573,7 @@ def run(cfg: dict, env: dict, only: str | None, dry: bool, kind: str | None = No
                 for a in {p[2] for p in pending}:
                     rag.upsert(a, [d for p in pending if p[2] == a for d in p[4]])
                 for key, sha, a, _, docs in pending:
-                    state[key] = {"sha": sha, "area": a, "chunks": len(docs)}
+                    state[key] = {"sha": sha, "namespace": a, "chunks": len(docs)}
                 save_json(STATE_FILE, state)
             except urllib.error.HTTPError as e:
                 errors += 1
@@ -577,8 +585,8 @@ def run(cfg: dict, env: dict, only: str | None, dry: bool, kind: str | None = No
                 stopped = True
                 log(f"{src['name']}: {src['max_minutes']} minutes up; the rest goes in on the next run")
                 break
-            st, area = files[rel].stat(), area_of(rel)
-            stamp = [st.st_size, st.st_mtime_ns, area]
+            st, namespace = files[rel].stat(), namespace_of(rel)
+            stamp = [st.st_size, st.st_mtime_ns, namespace]
             if file_stamps.get(prefix + rel) == stamp:  # unchanged since it was last sent: not even opened
                 seen.update(parts_by_file.get(rel, []))
                 stamps[prefix + rel] = stamp
@@ -594,7 +602,7 @@ def run(cfg: dict, env: dict, only: str | None, dry: bool, kind: str | None = No
                 seen.add(key)
                 sha = hashlib.sha256(ptext.encode()).hexdigest()
                 old = state.get(key)
-                if old and old["sha"] == sha and old.get("area") == area:
+                if old and old["sha"] == sha and old.get("namespace") == namespace:
                     continue
                 log(f"{'update' if old else 'add'} {key}")
                 changed += 1
@@ -602,19 +610,19 @@ def run(cfg: dict, env: dict, only: str | None, dry: bool, kind: str | None = No
                     continue
                 docs = [{"id": f"{key}#{i}", "text": c, "source": where(label_of(src), rel)}
                         for i, c in enumerate(chunks(ptext))]
-                pending.append((key, sha, area, old.get("area", area) if old else None, docs))
+                pending.append((key, sha, namespace, old.get("namespace", namespace) if old else None, docs))
                 if sum(len(p[4]) for p in pending) >= BATCH:
                     flush()
         flush()
         # Files not reached before the time limit are not gone: delete only after a run that saw every file
-        gone = [] if stopped else [k for k in state if k.startswith(prefix) and k not in seen and in_area(state[k]["area"], under)]
+        gone = [] if stopped else [k for k in state if k.startswith(prefix) and k not in seen and in_namespace(state[k]["namespace"], under)]
         for key in gone:
             log(f"delete {key}")
         changed += len(gone)
         if gone and not dry:
             try:
-                for a in {state[k]["area"] for k in gone}:
-                    rag.delete(a, [k + "#" for k in gone if state[k]["area"] == a])
+                for a in {state[k]["namespace"] for k in gone}:
+                    rag.delete(a, [k + "#" for k in gone if state[k]["namespace"] == a])
                 for k in gone:
                     del state[k]
                 save_json(STATE_FILE, state)
@@ -623,7 +631,7 @@ def run(cfg: dict, env: dict, only: str | None, dry: bool, kind: str | None = No
                 log(f"  failed: HTTP {e.code} {e.read().decode(errors='replace')[:200]}")
         if not dry and errors == before:  # with errors, every changed file is read again next run
             if not stopped:  # every file was seen: forget the ones that are gone
-                for k in [k for k in file_stamps if k.startswith(prefix) and in_area(file_stamps[k][2], under)]:
+                for k in [k for k in file_stamps if k.startswith(prefix) and in_namespace(file_stamps[k][2], under)]:
                     del file_stamps[k]
             file_stamps.update(stamps)
             save_json(FILES_FILE, file_stamps)
@@ -633,27 +641,27 @@ def run(cfg: dict, env: dict, only: str | None, dry: bool, kind: str | None = No
 
 def status(cfg: dict, env: dict) -> int:
     rag = Rag(cfg["rag"]["url"], env.get(cfg["rag"].get("api_key_env", "RAG_API_KEY"), ""))
-    state = json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
+    state = load_state()
     print(f"tracked parts: {len(state)}, chunks: {sum(v.get('chunks', 0) for v in state.values())}")
-    print("areas (chunks): " + ", ".join(f"{a} {n}" for a, n in rag.call("GET", "/areas").items()))
+    print("namespaces (chunks): " + ", ".join(f"{a} {n}" for a, n in rag.call("GET", "/namespaces").items()))
     return 0
 
 
 def main(argv: list | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="txtai-areas-sync", description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(prog="txtai-kura-sync", description=__doc__.splitlines()[0])
     ap.add_argument("--config", type=Path, default=Path("sources.toml"),
                     help="sources file (default: ./sources.toml); <name>.local.toml next to it is read too")
     ap.add_argument("--data", type=Path, default=None,
-                    help="state and cache (default: $XDG_STATE_HOME/txtai-areas-sync or ~/.local/state/txtai-areas-sync)")
+                    help="state and cache (default: $XDG_STATE_HOME/txtai-kura-sync or ~/.local/state/txtai-kura-sync)")
     ap.add_argument("--env-file", type=Path, default=None, help="KEY=value lines (default: .env next to the config)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run", help="send what changed")
     r.add_argument("--source", help="only this source")
     r.add_argument("--kind", help="only sources of this kind")
-    r.add_argument("--area", help="only files going to this area or below it, e.g. language or language.pt")
+    r.add_argument("--namespace", help="only files going to this namespace or below it, e.g. language or language.pt")
     r.add_argument("--dry-run", action="store_true", help="show what would be sent or deleted, change nothing")
     r.add_argument("--due", action="store_true", help="only the sources whose time has come (cron / every / at)")
-    sub.add_parser("status", help="parts and chunks tracked here, chunks per area on the server")
+    sub.add_parser("status", help="parts and chunks tracked here, chunks per namespace on the server")
     a = ap.parse_args(argv)
     configure(a.data or default_data())
     cfg = load_sources(a.config)
@@ -690,10 +698,10 @@ def main(argv: list | None = None) -> int:
                 if rc == 0 and not a.dry_run:
                     mark_runs(names, started)  # with errors, they are due again next hour
                 return rc
-            rc = run(cfg, env, a.source, a.dry_run, a.kind, under=a.area)
+            rc = run(cfg, env, a.source, a.dry_run, a.kind, under=a.namespace)
             ran = [s["name"] for s in cfg.get("source", [])
                    if (not a.source or s["name"] == a.source) and (not a.kind or s.get("kind") == a.kind)]
-            if rc == 0 and not a.dry_run and not a.area:  # a full or a kind run also counts for --due (not part of one)
+            if rc == 0 and not a.dry_run and not a.namespace:  # a full or a kind run also counts for --due (not part of one)
                 mark_runs(ran, started)
             return rc
         except (urllib.error.URLError, subprocess.CalledProcessError) as e:

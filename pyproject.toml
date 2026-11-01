@@ -3,9 +3,9 @@ requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "txtai-areas-sync"
+name = "txtai-kura-sync"
 dynamic = ["version"]
-description = "Keep a txtai-areas search server in step with git repositories, folders and shelves of books"
+description = "Keep a txtai-kura search server in step with git repositories, folders and shelves of books"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
@@ -18,13 +18,13 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/otaqq/txtai-areas-sync"
+Homepage = "https://github.com/otaqq/txtai-kura-sync"
 
 [project.scripts]
-txtai-areas-sync = "txtai_areas_sync.sync:main"
+txtai-kura-sync = "txtai_kura_sync.sync:main"
 
 [tool.setuptools.dynamic]
-version = { attr = "txtai_areas_sync.__version__" }
+version = { attr = "txtai_kura_sync.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
