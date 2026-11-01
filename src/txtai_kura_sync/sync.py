@@ -382,11 +382,7 @@ def load_sources(config: Path) -> dict:
 
 
 def load_state() -> dict:
-    state = json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
-    for v in state.values():  # state from txtai-areas-sync (before v0.2.0) says "area"
-        if "area" in v:
-            v["namespace"] = v.pop("area")
-    return state
+    return json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
 
 
 def save_json(path: Path, data: dict) -> None:

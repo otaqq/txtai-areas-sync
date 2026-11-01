@@ -156,15 +156,6 @@ class TestRun(Base):
         self.assertEqual(rag.deletes, [("notes", ["d:sub/b.md#(intro)#"])])
         self.assertNotIn("d:sub/b.md#(intro)", json.loads(sync.STATE_FILE.read_text()))
 
-    def test_state_from_before_the_rename_is_read(self):
-        self.sync()
-        state = json.loads(sync.STATE_FILE.read_text())
-        for v in state.values():
-            v["area"] = v.pop("namespace")
-        sync.STATE_FILE.write_text(json.dumps(state))
-        rag = self.sync()
-        self.assertEqual((rag.upserts, rag.deletes), ([], []))
-
     def test_dry_run_changes_nothing(self):
         self.assertEqual(sync.run(self.cfg, {}, None, True), 0)
         self.assertEqual(FakeRag.last.upserts, [])
