@@ -1,5 +1,7 @@
 # txtai-kura-sync
 
+*kura* (蔵) is Japanese for a storehouse: a place that keeps every kind of thing, not only books.
+
 Formerly **txtai-areas-sync**: v0.2.0 renamed it and the `area` setting to `namespace` (sources and `--namespace`).
 It talks to txtai-kura v0.2.0 or later.
 
