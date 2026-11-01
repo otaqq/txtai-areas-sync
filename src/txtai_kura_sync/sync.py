@@ -12,6 +12,8 @@ what it belongs to. Only one run at a time (lock file).
 Usage:
   txtai-kura-sync run [--source NAME] [--kind KIND] [--namespace NAMESPACE] [--due] [--dry-run]
   txtai-kura-sync status
+  txtai-kura-sync extract --namespace NAMESPACE [--model M] [--api-base URL] [--parallel N] [--minutes M] [--limit N]
+                          [--dry-run]   (knowledge graph, see extract.py)
 Options before the command: --config sources.toml (default), --data DIR (state and cache).
 """
 import argparse
@@ -367,14 +369,14 @@ def shelf_files(src: dict, include: list, exclude: list):
 def load_sources(config: Path) -> dict:
     """The config file, then <name>.local.toml next to it (not in git, like .env: places that should not be on
     record). A local source replaces the shared one of the same name; new names are added; other local tables
-    ([rag], [text], [kinds.*]) replace the shared one's keys."""
+    ([rag], [text], [extract], [kinds.*]) replace the shared one's keys."""
     cfg = tomllib.loads(config.read_text())
     local = config.with_name(config.stem + ".local.toml")
     if local.exists():
         extra = tomllib.loads(local.read_text())
         names = {s["name"] for s in extra.get("source", [])}
         cfg["source"] = [s for s in cfg.get("source", []) if s["name"] not in names] + extra.get("source", [])
-        for table in ("rag", "text"):
+        for table in ("rag", "text", "extract"):
             cfg[table] = cfg.get(table, {}) | extra.get(table, {})
         cfg["kinds"] = cfg.get("kinds", {}) | extra.get("kinds", {})
     TEXT.update(cfg.get("text", {}))
@@ -658,12 +660,36 @@ def main(argv: list | None = None) -> int:
     r.add_argument("--dry-run", action="store_true", help="show what would be sent or deleted, change nothing")
     r.add_argument("--due", action="store_true", help="only the sources whose time has come (cron / every / at)")
     sub.add_parser("status", help="parts and chunks tracked here, chunks per namespace on the server")
+    x = sub.add_parser("extract", help="knowledge graph: ask an LLM for entities and relations in chunks not extracted yet")
+    x.add_argument("--namespace", required=True)
+    x.add_argument("--api-base", help="OpenAI-compatible API, e.g. http://localhost:11434/v1 ([extract] api_base)")
+    x.add_argument("--model", help="model name at that API ([extract] model)")
+    x.add_argument("--api-key-env", help="env var with the API key, if it needs one ([extract] api_key_env)")
+    x.add_argument("--parallel", type=int, help="requests at a time (default 1)")
+    x.add_argument("--minutes", type=float, help="stop after this long; the rest goes on next time")
+    x.add_argument("--limit", type=int, help="stop after this many chunks")
+    x.add_argument("--dry-run", action="store_true", help="print what the model finds, send nothing")
     a = ap.parse_args(argv)
     configure(a.data or default_data())
     cfg = load_sources(a.config)
     env_file = a.env_file or a.config.with_name(".env")
     env = {**load_env(env_file), **os.environ}
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+    if a.cmd == "extract":  # works on the server's chunks, not on the sources: no lock
+        from . import extract
+        x = cfg.get("extract", {})
+        api_base, model = a.api_base or x.get("api_base"), a.model or x.get("model")
+        if not api_base or not model:
+            log("error: extract needs --api-base and --model (or api_base / model in [extract])")
+            return 2
+        llm = extract.Llm(api_base, model, env.get(a.api_key_env or x.get("api_key_env") or "", ""))
+        rag = Rag(cfg["rag"]["url"], env.get(cfg["rag"].get("api_key_env", "RAG_API_KEY"), ""))
+        try:
+            return extract.run(rag, llm, a.namespace, a.parallel or x.get("parallel", 1),
+                               a.minutes or x.get("minutes"), a.limit, a.dry_run)
+        except urllib.error.URLError as e:
+            log(f"error: {e}")
+            return 1
     if a.cmd == "status":
         # Read-only: never wait for a running sync
         try:

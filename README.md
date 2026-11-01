@@ -22,6 +22,37 @@ client. This is that client.
 - No dependencies outside the Python standard library (3.11+). `pdftotext` (poppler) is needed only for PDFs, and
   `git` only for git sources.
 
+## Knowledge graph extraction
+
+`extract` asks an LLM for the entities and relations in each chunk the server has not extracted yet
+(txtai-kura's `/kg/todo`), and sends them back (`/kg/upsert`). It works on the server's chunks, so it needs no
+sources, only `[rag]`; any OpenAI-compatible chat API works (OpenAI, Ollama's `/v1`, a LiteLLM proxy).
+
+```sh
+txtai-kura-sync extract --namespace notes --api-base http://localhost:11434/v1 --model gemma3:12b --limit 10 --dry-run
+txtai-kura-sync extract --namespace notes --api-base http://localhost:4000/v1 --model extract --parallel 3 --minutes 50
+```
+
+```toml
+[extract]                          # defaults for the options above
+api_base = "http://localhost:4000/v1"
+model = "extract"
+api_key_env = "LLM_API_KEY"        # if the API needs a key
+parallel = 3
+minutes = 50
+```
+
+- Resumable: a chunk counts as done once its result is sent, so a run stopped by `--minutes`, `--limit` or an error
+  goes on where it left off. A chunk changed by `run` is extracted again, replacing what was learned from it.
+- `--parallel` requests at a time; behind a proxy over several machines they are spread over them.
+- A refused connection, a timeout or a server error is tried again after 15 and 60 seconds (a machine restarting);
+  a chunk that still fails is left for the next run.
+- `--dry-run` prints what the model finds as JSON lines and sends nothing.
+
+Speed is mostly the model's machine. On 10 chunks of technical notes (180-1500 characters), Gemma 3 12B took
+23 s per chunk on an RTX 3060 and about 60-70 s on Apple silicon laptops and minis; models that do not fit in the GPU's
+memory were several times slower.
+
 ## Install
 
 ```sh
